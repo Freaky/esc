@@ -1,6 +1,7 @@
 /// Email Sucks Completely / Email Search Command
 
 extern crate mailparse;
+#[macro_use]
 extern crate tantivy;
 extern crate walkdir;
 #[macro_use]
@@ -42,66 +43,36 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
     }
 }
 
-struct IndexDoc {
-    id: String,
-    path: String,
-    subject: String,
-    body: String
-}
-
-impl IndexDoc {
-    fn parse<P: AsRef<Path>>(path: P, message: &[u8]) -> Result<Self, io::Error> {
-        parse_mail(&message).and_then(|email| {
-            let m_id = email.headers.get_first_value("Message-Id");
-            let m_sub = email.headers.get_first_value("Subject");
-            let m_body = email.get_body();
-
-            if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
-                Ok(Self { path: path.as_ref().to_string_lossy().to_string(), id: m_id.clone(), subject: m_sub.clone(), body: m_body.clone()})
-            } else {
-                Err(MailParseError::Generic("Not enough headers"))
-            }
-        }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
-    }
-}
-
 fn index_emails(dirs: &[&str]) {
     let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
-    let (send_idx, recv_idx) = channel::bounded::<IndexDoc>(16);
+    let (send_idx, recv_idx) = channel::bounded::<Document>(16);
 
     let start = Instant::now();
+    let index = open_search_index(INDEX_LOCATION);
+    let mut index_writer = index.writer_with_num_threads(4, 500_000_000).expect("index writer");
+
+    let schema = index.schema();
+    let id = schema.get_field("id").expect("id");
+    let path = schema.get_field("path").expect("path");
+    let subject = schema.get_field("subject").expect("subject");
+    let body = schema.get_field("body").expect("body");
 
     crossbeam::scope(|scope| {
         // Index thread, recv_doc -> tantivy
         scope.spawn(|| {
-            let index = open_search_index(INDEX_LOCATION);
-            let mut index_writer = index.writer_with_num_threads(4, 500_000_000).expect("index writer");
-
-            let schema = index.schema();
-            let id = schema.get_field("id").expect("id");
-            let path = schema.get_field("path").expect("path");
-            let subject = schema.get_field("subject").expect("subject");
-            let body = schema.get_field("body").expect("body");
-
             let mut indexed = 0;
 
             for doc in recv_idx {
-                let mut idoc = Document::default();
-                idoc.add_text(path, &doc.path);
-                idoc.add_text(id, &doc.id);
-                idoc.add_text(subject, &doc.subject);
-                idoc.add_text(body, &doc.body);
-                index_writer.add_document(idoc);
+                index_writer.add_document(doc);
                 indexed += 1;
 
                 if indexed % 10000 == 0 {
                     let elapsed = start.elapsed();
                     println!(
-                        "[{} {:.2}/sec] {:?} {}",
+                        "[{} {:.2}/sec] {:?}",
                         indexed,
                         indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
-                        elapsed,
-                        &doc.path
+                        elapsed
                     );
                 }
             }
@@ -119,12 +90,29 @@ fn index_emails(dirs: &[&str]) {
             let my_send_idx = send_idx.clone();
             scope.spawn(move || {
                 for entry in my_recv_file {
-                    if let Ok(attr) = fs::metadata(&entry.path()) {
-                        if attr.is_file() && attr.len() < 1024 * 1024 * 4 {
-                            fs::read(&entry.path())
-                                .and_then(|message| IndexDoc::parse(&entry.path(), &message))
-                                .and_then(|doc| Ok(my_send_idx.send(doc))).ok();
+                    if let Ok(attr) = entry.metadata() {
+                        if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
+                            continue;
                         }
+                        fs::read(&entry.path()).and_then(|message| {
+                            parse_mail(&message).and_then(|email|
+                            {
+                                let m_id = email.headers.get_first_value("Message-Id");
+                                let m_sub = email.headers.get_first_value("Subject");
+                                let m_body = email.get_body();
+
+                                if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
+                                    let doc = doc!(
+                                        path => entry.path().to_string_lossy().to_string(),
+                                        id => m_id,
+                                        subject => m_sub,
+                                        body => m_body
+                                    );
+                                    my_send_idx.send(doc);
+                                }
+                                Ok(())
+                            }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
+                        }).ok();
                     }
                 }
 
