@@ -169,17 +169,6 @@ fn search(query: &str) {
 }
 
 fn main() {
-    /*    index_emails(
-        &["/home/freaky/Maildir/.unfiltered",
-        "/home/freaky/Maildir/.archive.2016.unfiltered",
-        "/home/freaky/Maildir/.archive.2015.unfiltered",
-        "/home/freaky/Maildir/.archive.2014.unfiltered",
-        "/home/freaky/Maildir/.archive.2013.unfiltered",
-        "/home/freaky/Maildir/.archive.2012.unfiltered",
-        "/home/freaky/Maildir/.archive.2011.unfiltered",
-        "/home/freaky/Maildir/.archive.2010.unfiltered"]
-    );*/
     index_emails(&["/home/freaky/Maildir/"]);
-    // index_emails(&["/home/freaky/Maildir/.spam.high"]);
     search("freshbsd v4 exception");
 }
