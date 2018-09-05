@@ -28,7 +28,7 @@ use std::fs;
 use std::path::{Path,PathBuf};
 use std::io;
 
-const INDEX_LOCATION: &str = "/tmp/email_sucks_completely/";
+const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
 
 fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
     let index_dir = index_dir.as_ref();
@@ -44,140 +44,39 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
         schema_builder.add_text_field("body", TEXT);
         let schema = schema_builder.build();
 
+        let _ = fs::create_dir_all(&index_dir);
         return Index::create_in_dir(index_dir, schema).expect("create index");
     }
 }
 
-fn index_emails(dirs: &[PathBuf]) {
-    let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
-    let (send_idx, recv_idx) = channel::bounded::<Document>(16);
+#[derive(Debug, StructOpt)]
+#[structopt(name = "esc", about="Email Search Command")]
+struct EscArgs {
+    /// Directory for Tantivy search index
+    #[structopt(short = "d", long = "index-dir", parse(from_os_str))]
+    index_dir: Option<PathBuf>,
 
-    let start = Instant::now();
-    let index = open_search_index(INDEX_LOCATION);
-    let mut index_writer = index.writer_with_num_threads(4, 500_000_000).expect("index writer");
-
-    let schema = index.schema();
-    let id = schema.get_field("id").expect("id");
-    let path = schema.get_field("path").expect("path");
-    let subject = schema.get_field("subject").expect("subject");
-    let body = schema.get_field("body").expect("body");
-
-    crossbeam::scope(|scope| {
-        // Index thread, recv_doc -> tantivy
-        scope.spawn(|| {
-            let mut indexed = 0;
-
-            for doc in recv_idx {
-                index_writer.add_document(doc);
-                indexed += 1;
-
-                if indexed % 10000 == 0 {
-                    let elapsed = start.elapsed();
-                    println!(
-                        "[{} {:.2}/sec] {:?}",
-                        indexed,
-                        indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
-                        elapsed
-                    );
-                }
-            }
-
-            index_writer.commit().expect("commit");
-            println!("Indexed {} messages in {:?}", indexed, start.elapsed());
-
-            index_writer.wait_merging_threads().unwrap();
-            println!("Final merge finished after {:?}", start.elapsed());
-        });
-
-        // Mail parse thread, recv_file -> send_doc, multiple
-        for _ in 0..8 {
-            let recv_file = recv_file.clone();
-            let send_idx = send_idx.clone();
-            scope.spawn(move || {
-                for entry in recv_file {
-                    if let Ok(attr) = entry.metadata() {
-                        if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
-                            continue;
-                        }
-                        fs::read(&entry.path()).and_then(|message| {
-                            parse_mail(&message).and_then(|email|
-                            {
-                                let m_id = email.headers.get_first_value("Message-Id");
-                                let m_sub = email.headers.get_first_value("Subject");
-                                let m_body = email.get_body();
-
-                                if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
-                                    let doc = doc!(
-                                        path => entry.path().to_string_lossy().to_string(),
-                                        id => m_id,
-                                        subject => m_sub,
-                                        body => m_body
-                                    );
-                                    send_idx.send(doc);
-                                }
-                                Ok(())
-                            }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
-                        }).ok();
-                    }
-                }
-
-                drop(send_idx);
-            });
-        }
-
-        drop(send_idx);
-
-        // WalkDir thread, -> send_file
-        scope.spawn(move || {
-            for dir in dirs.iter() {
-                let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
-
-                for entry in walker {
-                    entry.and_then(|entry| Ok(send_file.send(entry))).ok();
-                }
-            }
-
-            drop(send_file);
-        });
-    });
-}
-
-fn search(query: &str) {
-    let start = Instant::now();
-
-    let index = open_search_index(INDEX_LOCATION);
-    let schema = index.schema();
-
-    let path = schema.get_field("path").expect("path");
-    let subject = schema.get_field("subject").expect("subject");
-    let body = schema.get_field("body").expect("body");
-
-    index.load_searchers().expect("load_searchers");
-    let searcher = index.searcher();
-
-    let query_parser = QueryParser::for_index(&index, vec![subject, body]);
-    let query = query_parser.parse_query(query).expect("parse query");
-
-    let mut top_collector = TopCollector::with_limit(25);
-    searcher.search(&*query, &mut top_collector).unwrap();
-    let doc_addresses = top_collector.docs();
-    for doc_address in doc_addresses {
-        let retrieved_doc = searcher.doc(&doc_address).unwrap();
-        println!(
-            "{}: {}",
-            retrieved_doc.get_first(path).unwrap().text(),
-            retrieved_doc.get_first(subject).unwrap().text()
-        );
-    }
-
-    println!("searched in {:?}", start.elapsed());
+    #[structopt(subcommand)]
+    cmd: Command
 }
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "esc", about="Email Search Command")]
-enum Esc {
+enum Command {
     #[structopt(name = "index")]
     Index {
+        /// Email read/parse thread count
+        #[structopt(long = "read-threads", default_value = "2")]
+        read_threads: usize,
+
+        /// Tantivy index thread count
+        #[structopt(long = "index-threads", default_value = "1")]
+        index_threads: usize,
+
+        /// Tantivy index buffer size in MB
+        #[structopt(long = "index-buffer", default_value = "256")]
+        index_buffer: usize,
+
+        /// Maildir base directory to index
         #[structopt(parse(from_os_str))]
         dirs: Vec<PathBuf>
     },
@@ -187,13 +86,146 @@ enum Esc {
     }
 }
 
+struct Esc { }
+
+impl Esc {
+    fn index(index_dir: &PathBuf, read_threads: usize, index_threads: usize, index_buffer: usize, dirs: &[PathBuf]) {
+        let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
+        let (send_idx, recv_idx) = channel::bounded::<Document>(16);
+
+
+        let start = Instant::now();
+        let index = open_search_index(&index_dir);
+        let mut index_writer = index.writer_with_num_threads(index_threads, index_buffer * 1024 * 1024).expect("index writer");
+
+        let schema = index.schema();
+        let id = schema.get_field("id").expect("id");
+        let path = schema.get_field("path").expect("path");
+        let subject = schema.get_field("subject").expect("subject");
+        let body = schema.get_field("body").expect("body");
+
+        crossbeam::scope(|scope| {
+            // Index thread, recv_doc -> tantivy
+            scope.spawn(|| {
+                let mut indexed = 0;
+
+                for doc in recv_idx {
+                    index_writer.add_document(doc);
+                    indexed += 1;
+
+                    if indexed % 10000 == 0 {
+                        let elapsed = start.elapsed();
+                        println!(
+                            "[{} {:.2}/sec {:?}]",
+                            indexed,
+                            indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
+                            elapsed
+                        );
+                    }
+                }
+
+                index_writer.commit().expect("commit");
+                println!("Indexed {} messages in {:?}", indexed, start.elapsed());
+
+                index_writer.wait_merging_threads().unwrap();
+                println!("Final merge finished after {:?}", start.elapsed());
+            });
+
+            // Mail parse thread, recv_file -> send_doc, multiple
+            for _ in 0..read_threads {
+                let recv_file = recv_file.clone();
+                let send_idx = send_idx.clone();
+                scope.spawn(move || {
+                    for entry in recv_file {
+                        if let Ok(attr) = entry.metadata() {
+                            if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
+                                continue;
+                            }
+                            fs::read(&entry.path()).and_then(|message| {
+                                parse_mail(&message).and_then(|email|
+                                {
+                                    let m_id = email.headers.get_first_value("Message-Id");
+                                    let m_sub = email.headers.get_first_value("Subject");
+                                    let m_body = email.get_body();
+
+                                    if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
+                                        let doc = doc!(
+                                            path => entry.path().to_string_lossy().to_string(),
+                                            id => m_id,
+                                            subject => m_sub,
+                                            body => m_body
+                                        );
+                                        send_idx.send(doc);
+                                    }
+                                    Ok(())
+                                }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
+                            }).ok();
+                        }
+                    }
+
+                    drop(send_idx);
+                });
+            }
+
+            drop(send_idx);
+
+            // WalkDir thread, -> send_file
+            scope.spawn(move || {
+                for dir in dirs.iter() {
+                    let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
+
+                    for entry in walker {
+                        entry.and_then(|entry| Ok(send_file.send(entry))).ok();
+                    }
+                }
+
+                drop(send_file);
+            });
+        });
+    }
+
+
+    fn search(index_dir: &PathBuf, query: &str) {
+        let start = Instant::now();
+
+        let index = open_search_index(&index_dir);
+        let schema = index.schema();
+
+        let path = schema.get_field("path").expect("path");
+        let subject = schema.get_field("subject").expect("subject");
+        let body = schema.get_field("body").expect("body");
+
+        index.load_searchers().expect("load_searchers");
+        let searcher = index.searcher();
+
+        let query_parser = QueryParser::for_index(&index, vec![subject, body]);
+        let query = query_parser.parse_query(query).expect("parse query");
+
+        let mut top_collector = TopCollector::with_limit(25);
+        searcher.search(&*query, &mut top_collector).unwrap();
+        let doc_addresses = top_collector.docs();
+        for doc_address in doc_addresses {
+            let retrieved_doc = searcher.doc(&doc_address).unwrap();
+            println!(
+                "{}: {}",
+                retrieved_doc.get_first(path).unwrap().text(),
+                retrieved_doc.get_first(subject).unwrap().text()
+            );
+        }
+
+        println!("searched in {:?}", start.elapsed());
+    }
+}
+
 fn main() {
-    match Esc::from_args() {
-        Esc::Index { dirs } => {
-            index_emails(&dirs);
+    let opts = EscArgs::from_args();
+    let index = opts.index_dir.unwrap_or_else(|| PathBuf::from(INDEX_DIRECTORY));
+    match opts.cmd {
+        Command::Index { read_threads, index_threads, index_buffer, dirs } => {
+            Esc::index(&index, read_threads, index_threads, index_buffer, &dirs);
         },
-        Esc::Search { query } => {
-            search(&query);
+        Command::Search { query } => {
+            Esc::search(&index, &query);
         }
     }
 }
