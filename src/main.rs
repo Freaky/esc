@@ -86,10 +86,10 @@ fn index_emails(dirs: &[&str]) {
 
         // Mail parse thread, recv_file -> send_doc, multiple
         for _ in 0..8 {
-            let my_recv_file = recv_file.clone();
-            let my_send_idx = send_idx.clone();
+            let recv_file = recv_file.clone();
+            let send_idx = send_idx.clone();
             scope.spawn(move || {
-                for entry in my_recv_file {
+                for entry in recv_file {
                     if let Ok(attr) = entry.metadata() {
                         if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
                             continue;
@@ -108,7 +108,7 @@ fn index_emails(dirs: &[&str]) {
                                         subject => m_sub,
                                         body => m_body
                                     );
-                                    my_send_idx.send(doc);
+                                    send_idx.send(doc);
                                 }
                                 Ok(())
                             }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
@@ -116,7 +116,7 @@ fn index_emails(dirs: &[&str]) {
                     }
                 }
 
-                drop(my_send_idx);
+                drop(send_idx);
             });
         }
 
