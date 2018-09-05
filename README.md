@@ -2,7 +2,7 @@
 
 ## (Or: Email Sucks Completely)
 
-ESC is a simple a proof-of-concept toy I'm hacking together because I want to
+ESC is a simple proof-of-concept toy I'm hacking together because I want to
 play with [Tantivy] and would quite like a fast command-line email search tool.
 
 It can index my ~2 million-strong `~/Maildir` in under three minutes on my 12
