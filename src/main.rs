@@ -1,5 +1,4 @@
 /// Email Sucks Completely / Email Search Command
-
 extern crate mailparse;
 #[macro_use]
 extern crate tantivy;
@@ -19,14 +18,14 @@ use tantivy::Index;
 
 use walkdir::WalkDir;
 
-use crossbeam::channel as channel;
+use crossbeam::channel;
 
 use structopt::StructOpt;
 
-use std::time::Instant;
 use std::fs;
-use std::path::{Path,PathBuf};
 use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
 
@@ -50,14 +49,14 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
 }
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "esc", about="Email Search Command")]
+#[structopt(name = "esc", about = "Email Search Command")]
 struct EscArgs {
     /// Directory for Tantivy search index
     #[structopt(short = "d", long = "index-dir", parse(from_os_str))]
     index_dir: Option<PathBuf>,
 
     #[structopt(subcommand)]
-    cmd: Command
+    cmd: Command,
 }
 
 #[derive(Debug, StructOpt)]
@@ -78,25 +77,30 @@ enum Command {
 
         /// Maildir base directory to index
         #[structopt(parse(from_os_str))]
-        dirs: Vec<PathBuf>
+        dirs: Vec<PathBuf>,
     },
     #[structopt(name = "search")]
-    Search {
-        query: String
-    }
+    Search { query: String },
 }
 
-struct Esc { }
+struct Esc {}
 
 impl Esc {
-    fn index(index_dir: &PathBuf, read_threads: usize, index_threads: usize, index_buffer: usize, dirs: &[PathBuf]) {
+    fn index(
+        index_dir: &PathBuf,
+        read_threads: usize,
+        index_threads: usize,
+        index_buffer: usize,
+        dirs: &[PathBuf],
+    ) {
         let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
         let (send_idx, recv_idx) = channel::bounded::<Document>(16);
 
-
         let start = Instant::now();
         let index = open_search_index(&index_dir);
-        let mut index_writer = index.writer_with_num_threads(index_threads, index_buffer * 1024 * 1024).expect("index writer");
+        let mut index_writer = index
+            .writer_with_num_threads(index_threads, index_buffer * 1024 * 1024)
+            .expect("index writer");
 
         let schema = index.schema();
         let id = schema.get_field("id").expect("id");
@@ -128,26 +132,32 @@ impl Esc {
                             if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
                                 continue;
                             }
-                            fs::read(&entry.path()).and_then(|message| {
-                                parse_mail(&message)
-                                    .map(|email|
-                                    {
-                                        let m_id = email.headers.get_first_value("Message-Id");
-                                        let m_sub = email.headers.get_first_value("Subject");
-                                        let m_body = email.get_body();
+                            fs::read(&entry.path())
+                                .and_then(|message| {
+                                    parse_mail(&message)
+                                        .map(|email| {
+                                            let m_id = email.headers.get_first_value("Message-Id");
+                                            let m_sub = email.headers.get_first_value("Subject");
+                                            let m_body = email.get_body();
 
-                                        if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
-                                            let doc = doc!(
+                                            if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
+                                                (m_id, m_sub, m_body)
+                                            {
+                                                let doc = doc!(
                                                 path => entry.path().to_string_lossy().to_string(),
                                                 id => m_id,
                                                 subject => m_sub,
                                                 body => m_body
                                             );
-                                            send_idx.send(doc);
-                                        };
-                                    })
-                                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
-                            }).ok();
+                                                send_idx.send(doc);
+                                            };
+                                        }).map_err(|_| {
+                                            io::Error::new(
+                                                io::ErrorKind::Other,
+                                                "Failed parsing email",
+                                            )
+                                        })
+                                }).ok();
                         }
                     }
 
@@ -169,7 +179,8 @@ impl Esc {
                         println!(
                             "[{} {:.2}/sec {:?}]",
                             indexed,
-                            indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
+                            indexed as f64
+                                / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
                             elapsed
                         );
                     }
@@ -181,10 +192,8 @@ impl Esc {
                 index_writer.wait_merging_threads().unwrap();
                 println!("Final merge finished after {:?}", start.elapsed());
             });
-
         });
     }
-
 
     fn search(index_dir: &PathBuf, query: &str) {
         let start = Instant::now();
@@ -220,11 +229,18 @@ impl Esc {
 
 fn main() {
     let opts = EscArgs::from_args();
-    let index = opts.index_dir.unwrap_or_else(|| PathBuf::from(INDEX_DIRECTORY));
+    let index = opts
+        .index_dir
+        .unwrap_or_else(|| PathBuf::from(INDEX_DIRECTORY));
     match opts.cmd {
-        Command::Index { read_threads, index_threads, index_buffer, dirs } => {
+        Command::Index {
+            read_threads,
+            index_threads,
+            index_buffer,
+            dirs,
+        } => {
             Esc::index(&index, read_threads, index_threads, index_buffer, &dirs);
-        },
+        }
         Command::Search { query } => {
             Esc::search(&index, &query);
         }
