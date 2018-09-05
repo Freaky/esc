@@ -7,6 +7,9 @@ extern crate walkdir;
 #[macro_use]
 extern crate crossbeam;
 
+#[macro_use]
+extern crate structopt;
+
 use mailparse::*;
 
 use tantivy::collector::TopCollector;
@@ -18,9 +21,11 @@ use walkdir::WalkDir;
 
 use crossbeam::channel as channel;
 
+use structopt::StructOpt;
+
 use std::time::Instant;
 use std::fs;
-use std::path::Path;
+use std::path::{Path,PathBuf};
 use std::io;
 
 const INDEX_LOCATION: &str = "/tmp/email_sucks_completely/";
@@ -43,7 +48,7 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
     }
 }
 
-fn index_emails(dirs: &[&str]) {
+fn index_emails(dirs: &[PathBuf]) {
     let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
     let (send_idx, recv_idx) = channel::bounded::<Document>(16);
 
@@ -153,7 +158,7 @@ fn search(query: &str) {
     let query_parser = QueryParser::for_index(&index, vec![subject, body]);
     let query = query_parser.parse_query(query).expect("parse query");
 
-    let mut top_collector = TopCollector::with_limit(10);
+    let mut top_collector = TopCollector::with_limit(25);
     searcher.search(&*query, &mut top_collector).unwrap();
     let doc_addresses = top_collector.docs();
     for doc_address in doc_addresses {
@@ -168,7 +173,27 @@ fn search(query: &str) {
     println!("searched in {:?}", start.elapsed());
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "esc", about="Email Search Command")]
+enum Esc {
+    #[structopt(name = "index")]
+    Index {
+        #[structopt(parse(from_os_str))]
+        dirs: Vec<PathBuf>
+    },
+    #[structopt(name = "search")]
+    Search {
+        query: String
+    }
+}
+
 fn main() {
-    index_emails(&["/home/freaky/Maildir/"]);
-    search("freshbsd v4 exception");
+    match Esc::from_args() {
+        Esc::Index { dirs } => {
+            index_emails(&dirs);
+        },
+        Esc::Search { query } => {
+            search(&query);
+        }
+    }
 }
