@@ -105,33 +105,20 @@ impl Esc {
         let body = schema.get_field("body").expect("body");
 
         crossbeam::scope(|scope| {
-            // Index thread, recv_doc -> tantivy
-            scope.spawn(|| {
-                let mut indexed = 0;
+            // WalkDir thread, -> send_file
+            scope.spawn(move || {
+                for dir in dirs.iter() {
+                    let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
 
-                for doc in recv_idx {
-                    index_writer.add_document(doc);
-                    indexed += 1;
-
-                    if indexed % 10000 == 0 {
-                        let elapsed = start.elapsed();
-                        println!(
-                            "[{} {:.2}/sec {:?}]",
-                            indexed,
-                            indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
-                            elapsed
-                        );
+                    for entry in walker {
+                        entry.map(|entry| send_file.send(entry)).ok();
                     }
                 }
 
-                index_writer.commit().expect("commit");
-                println!("Indexed {} messages in {:?}", indexed, start.elapsed());
-
-                index_writer.wait_merging_threads().unwrap();
-                println!("Final merge finished after {:?}", start.elapsed());
+                drop(send_file);
             });
 
-            // Mail parse thread, recv_file -> send_doc, multiple
+            // Mail parse thread, recv_file -> send_idx, multiple
             for _ in 0..read_threads {
                 let recv_file = recv_file.clone();
                 let send_idx = send_idx.clone();
@@ -167,21 +154,34 @@ impl Esc {
                     drop(send_idx);
                 });
             }
-
             drop(send_idx);
 
-            // WalkDir thread, -> send_file
-            scope.spawn(move || {
-                for dir in dirs.iter() {
-                    let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
+            // Index thread, recv_idx -> tantivy
+            scope.spawn(|| {
+                let mut indexed = 0;
 
-                    for entry in walker {
-                        entry.map(|entry| send_file.send(entry)).ok();
+                for doc in recv_idx {
+                    index_writer.add_document(doc);
+                    indexed += 1;
+
+                    if indexed % 10000 == 0 {
+                        let elapsed = start.elapsed();
+                        println!(
+                            "[{} {:.2}/sec {:?}]",
+                            indexed,
+                            indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
+                            elapsed
+                        );
                     }
                 }
 
-                drop(send_file);
+                index_writer.commit().expect("commit");
+                println!("Indexed {} messages in {:?}", indexed, start.elapsed());
+
+                index_writer.wait_merging_threads().unwrap();
+                println!("Final merge finished after {:?}", start.elapsed());
             });
+
         });
     }
 
