@@ -4,7 +4,7 @@ extern crate mailparse;
 extern crate tantivy;
 extern crate walkdir;
 #[macro_use]
-extern crate crossbeam_channel;
+extern crate crossbeam;
 
 use mailparse::*;
 
@@ -15,11 +15,12 @@ use tantivy::Index;
 
 use walkdir::WalkDir;
 
-use crossbeam_channel as channel;
+use crossbeam::channel as channel;
 
 use std::time::Instant;
 use std::fs;
 use std::path::Path;
+use std::io;
 
 const INDEX_LOCATION: &str = "/tmp/email_sucks_completely/";
 
@@ -41,63 +42,111 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
     }
 }
 
+struct IndexDoc {
+    id: String,
+    path: String,
+    subject: String,
+    body: String
+}
+
+impl IndexDoc {
+    fn parse<P: AsRef<Path>>(path: P, message: &[u8]) -> Result<Self, io::Error> {
+        parse_mail(&message).and_then(|email| {
+            let m_id = email.headers.get_first_value("Message-Id");
+            let m_sub = email.headers.get_first_value("Subject");
+            let m_body = email.get_body();
+
+            if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body) {
+                Ok(Self { path: path.as_ref().to_string_lossy().to_string(), id: m_id.clone(), subject: m_sub.clone(), body: m_body.clone()})
+            } else {
+                Err(MailParseError::Generic("Not enough headers"))
+            }
+        }).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed parsing email"))
+    }
+}
+
 fn index_emails(dirs: &[&str]) {
-    let index = open_search_index(INDEX_LOCATION);
-    let schema = index.schema();
+    let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
+    let (send_idx, recv_idx) = channel::bounded::<IndexDoc>(16);
 
-    let mut index_writer = index.writer_with_num_threads(4, 250_000_000).expect("index writer");
-
-    let id = schema.get_field("id").expect("id");
-    let path = schema.get_field("path").expect("path");
-    // let date = schema.get_field("date").unwrap();
-    let subject = schema.get_field("subject").expect("subject");
-    let body = schema.get_field("body").expect("body");
-
-    let mut indexed = 0;
     let start = Instant::now();
 
-    for dir in dirs.iter() {
-        let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
-        for entry in walker {
-            if let Ok(entry) = entry {
+    crossbeam::scope(|scope| {
+        // Index thread, recv_doc -> tantivy
+        scope.spawn(|| {
+            let index = open_search_index(INDEX_LOCATION);
+            let mut index_writer = index.writer_with_num_threads(4, 500_000_000).expect("index writer");
+
+            let schema = index.schema();
+            let id = schema.get_field("id").expect("id");
+            let path = schema.get_field("path").expect("path");
+            let subject = schema.get_field("subject").expect("subject");
+            let body = schema.get_field("body").expect("body");
+
+            let mut indexed = 0;
+
+            for doc in recv_idx {
+                let mut idoc = Document::default();
+                idoc.add_text(path, &doc.path);
+                idoc.add_text(id, &doc.id);
+                idoc.add_text(subject, &doc.subject);
+                idoc.add_text(body, &doc.body);
+                index_writer.add_document(idoc);
+                indexed += 1;
+
                 if indexed % 10000 == 0 {
                     let elapsed = start.elapsed();
                     println!(
                         "[{} {:.2}/sec] {:?} {}",
                         indexed,
                         indexed as f64 / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
-                        start.elapsed(),
-                        entry.path().display()
+                        elapsed,
+                        &doc.path
                     );
                 }
-                if let Ok(message) = fs::read(&entry.path()) {
-                    if let Ok(email) = parse_mail(&message) {
-                        let m_id = email.headers.get_first_value("Message-Id");
-                        let m_sub = email.headers.get_first_value("Subject");
-                        let m_body = email.get_body();
+            }
 
-                        if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) = (m_id, m_sub, m_body)
-                        {
-                            let mut doc = Document::default();
-                            doc.add_text(path, &entry.path().to_string_lossy());
-                            doc.add_text(id, &m_id);
-                            doc.add_text(subject, &m_sub);
-                            doc.add_text(body, &m_body);
+            index_writer.commit().expect("commit");
+            println!("Indexed {} messages in {:?}", indexed, start.elapsed());
 
-                            index_writer.add_document(doc);
-                            indexed += 1;
+            index_writer.wait_merging_threads().unwrap();
+            println!("Final merge finished after {:?}", start.elapsed());
+        });
+
+        // Mail parse thread, recv_file -> send_doc, multiple
+        for _ in 0..8 {
+            let my_recv_file = recv_file.clone();
+            let my_send_idx = send_idx.clone();
+            scope.spawn(move || {
+                for entry in my_recv_file {
+                    if let Ok(attr) = fs::metadata(&entry.path()) {
+                        if attr.is_file() && attr.len() < 1024 * 1024 * 4 {
+                            fs::read(&entry.path())
+                                .and_then(|message| IndexDoc::parse(&entry.path(), &message))
+                                .and_then(|doc| Ok(my_send_idx.send(doc))).ok();
                         }
                     }
                 }
-            }
+
+                drop(my_send_idx);
+            });
         }
-    }
 
-    index_writer.commit().expect("commit");
-    println!("Indexed {} messages in {:?}", indexed, start.elapsed());
+        drop(send_idx);
 
-    index_writer.wait_merging_threads().unwrap();
-    println!("Final merge finished after {:?}", start.elapsed());
+        // WalkDir thread, -> send_file
+        scope.spawn(move || {
+            for dir in dirs.iter() {
+                let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
+
+                for entry in walker {
+                    entry.and_then(|entry| Ok(send_file.send(entry))).ok();
+                }
+            }
+
+            drop(send_file);
+        });
+    });
 }
 
 fn search(query: &str) {

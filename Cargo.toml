@@ -8,6 +8,7 @@ tantivy = "0.6.1"
 walkdir = "2.2.5"
 mailparse = { git = "file:///home/freaky/code/mailparse-freaky", branch = "pet-clippy" }
 crossbeam-channel = "0.2.4"
+crossbeam = "0.4.1"
 #mailparse = { git = "file:///home/freaky/code/mailparse-freaky", commit = "69297237dff3559e039c7add279c40a2a985fb99" }
 #mailparse = { git = "file:///home/freaky/code/mailparse", branch = "master" }
 #	 "0.6.2"
