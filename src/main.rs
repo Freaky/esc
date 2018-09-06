@@ -24,7 +24,7 @@ use structopt::StructOpt;
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
