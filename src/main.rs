@@ -108,7 +108,7 @@ impl Esc {
         crossbeam::scope(|scope| {
             // WalkDir thread, -> send_file
             scope.spawn(move || {
-                for dir in opts.dirs.iter() {
+                for dir in &opts.dirs {
                     let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
 
                     for entry in walker {
