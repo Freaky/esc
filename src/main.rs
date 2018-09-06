@@ -134,29 +134,26 @@ impl Esc {
                             }
                             fs::read(&entry.path())
                                 .and_then(|message| {
-                                    parse_mail(&message)
-                                        .map(|email| {
-                                            let m_id = email.headers.get_first_value("Message-Id");
-                                            let m_sub = email.headers.get_first_value("Subject");
-                                            let m_body = email.get_body();
+                                    let email = parse_mail(&message).map_err(|_| {
+                                        io::Error::new(io::ErrorKind::Other, "Failed parsing email")
+                                    })?;
 
-                                            if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
-                                                (m_id, m_sub, m_body)
-                                            {
-                                                let doc = doc!(
-                                                path => entry.path().to_string_lossy().to_string(),
-                                                id => m_id,
-                                                subject => m_sub,
-                                                body => m_body
-                                            );
-                                                send_idx.send(doc);
-                                            };
-                                        }).map_err(|_| {
-                                            io::Error::new(
-                                                io::ErrorKind::Other,
-                                                "Failed parsing email",
-                                            )
-                                        })
+                                    let m_id = email.headers.get_first_value("Message-Id");
+                                    let m_sub = email.headers.get_first_value("Subject");
+                                    let m_body = email.get_body();
+
+                                    if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
+                                        (m_id, m_sub, m_body)
+                                    {
+                                        let doc = doc!(
+                                        path => entry.path().to_string_lossy().to_string(),
+                                        id => m_id,
+                                        subject => m_sub,
+                                        body => m_body
+                                    );
+                                        send_idx.send(doc);
+                                    };
+                                    Ok(())
                                 }).ok();
                         }
                     }
