@@ -112,13 +112,17 @@ impl Esc {
         crossbeam::scope(|scope| {
             // WalkDir thread, -> send_file
             scope.spawn(move || {
-                for dir in &opts.dirs {
-                    let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
-
-                    for entry in walker {
-                        entry.map(|entry| send_file.send(entry)).ok();
-                    }
-                }
+                opts.dirs.iter()
+                    .flat_map(|dir| WalkDir::new(dir).min_depth(2).max_depth(3))
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        entry.path().parent().map(|p| {
+                            p.file_name().
+                                map(|f| f == "new" || f == "cur")
+                                    .unwrap_or(false)
+                        }).unwrap_or(false)
+                    })
+                    .for_each(|entry| send_file.send(entry));
 
                 drop(send_file);
             });
