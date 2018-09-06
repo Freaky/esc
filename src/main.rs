@@ -68,7 +68,7 @@ enum Command {
 }
 
 struct Esc {
-    dir: PathBuf
+    dir: PathBuf,
 }
 
 impl Esc {
@@ -112,19 +112,22 @@ impl Esc {
         crossbeam::scope(|scope| {
             // WalkDir thread, -> send_file
             scope.spawn(move || {
-                opts.dirs.iter()
+                opts.dirs
+                    .iter()
                     .flat_map(|dir| WalkDir::new(dir).min_depth(2).max_depth(3))
                     .filter_map(Result::ok)
                     .filter(|entry| {
-                        entry.path().parent()
+                        entry
+                            .path()
+                            .parent()
                             .and_then(Path::file_name)
                             .map(|f| (f == "new" || f == "cur"))
-                            .unwrap_or(false) &&
-                            entry.metadata().map(|m| {
-                                m.is_file() && m.len() < 1024 * 1024 * 4
-                            }).unwrap_or(false)
-                    })
-                    .for_each(|entry| send_file.send(entry));
+                            .unwrap_or(false)
+                            && entry
+                                .metadata()
+                                .map(|m| m.is_file() && m.len() < 1024 * 1024 * 4)
+                                .unwrap_or(false)
+                    }).for_each(|entry| send_file.send(entry));
 
                 drop(send_file);
             });
