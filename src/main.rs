@@ -119,7 +119,10 @@ impl Esc {
                         entry.path().parent()
                             .and_then(Path::file_name)
                             .map(|f| (f == "new" || f == "cur"))
-                            .unwrap_or(false)
+                            .unwrap_or(false) &&
+                            entry.metadata().map(|m| {
+                                m.is_file() && m.len() < 1024 * 1024 * 4
+                            }).unwrap_or(false)
                     })
                     .for_each(|entry| send_file.send(entry));
 
@@ -132,34 +135,29 @@ impl Esc {
                 let send_idx = send_idx.clone();
                 scope.spawn(move || {
                     for entry in recv_file {
-                        if let Ok(attr) = entry.metadata() {
-                            if !(attr.is_file() && attr.len() < 1024 * 1024 * 4) {
-                                continue;
-                            }
-                            fs::read(&entry.path())
-                                .and_then(|message| {
-                                    let email = parse_mail(&message).map_err(|_| {
-                                        io::Error::new(io::ErrorKind::Other, "Failed parsing email")
-                                    })?;
+                        fs::read(&entry.path())
+                            .and_then(|message| {
+                                let email = parse_mail(&message).map_err(|_| {
+                                    io::Error::new(io::ErrorKind::Other, "Failed parsing email")
+                                })?;
 
-                                    let m_id = email.headers.get_first_value("Message-Id");
-                                    let m_sub = email.headers.get_first_value("Subject");
-                                    let m_body = email.get_body();
+                                let m_id = email.headers.get_first_value("Message-Id");
+                                let m_sub = email.headers.get_first_value("Subject");
+                                let m_body = email.get_body();
 
-                                    if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
-                                        (m_id, m_sub, m_body)
-                                    {
-                                        let doc = doc!(
-                                        path => entry.path().to_string_lossy().to_string(),
-                                        id => m_id,
-                                        subject => m_sub,
-                                        body => m_body
-                                    );
-                                        send_idx.send(doc);
-                                    };
-                                    Ok(())
-                                }).ok();
-                        }
+                                if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
+                                    (m_id, m_sub, m_body)
+                                {
+                                    let doc = doc!(
+                                    path => entry.path().to_string_lossy().to_string(),
+                                    id => m_id,
+                                    subject => m_sub,
+                                    body => m_body
+                                );
+                                    send_idx.send(doc);
+                                };
+                                Ok(())
+                            }).ok();
                     }
 
                     drop(send_idx);
