@@ -24,7 +24,7 @@ use structopt::StructOpt;
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
@@ -116,11 +116,10 @@ impl Esc {
                     .flat_map(|dir| WalkDir::new(dir).min_depth(2).max_depth(3))
                     .filter_map(Result::ok)
                     .filter(|entry| {
-                        entry.path().parent().map(|p| {
-                            p.file_name().
-                                map(|f| f == "new" || f == "cur")
-                                    .unwrap_or(false)
-                        }).unwrap_or(false)
+                        entry.path().parent()
+                            .and_then(Path::file_name)
+                            .map(|f| (f == "new" || f == "cur"))
+                            .unwrap_or(false)
                     })
                     .for_each(|entry| send_file.send(entry));
 
