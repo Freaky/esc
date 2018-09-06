@@ -29,25 +29,6 @@ use std::time::Instant;
 
 const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
 
-fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
-    let index_dir = index_dir.as_ref();
-
-    if let Ok(index) = Index::open_in_dir(index_dir) {
-        return index;
-    } else {
-        let mut schema_builder = SchemaBuilder::default();
-        schema_builder.add_text_field("id", STRING | STORED);
-        schema_builder.add_text_field("path", STRING | STORED);
-        // schema_builder.add_i64_field("date", INT_INDEXED);
-        schema_builder.add_text_field("subject", TEXT | STORED);
-        schema_builder.add_text_field("body", TEXT);
-        let schema = schema_builder.build();
-
-        let _ = fs::create_dir_all(&index_dir);
-        return Index::create_in_dir(index_dir, schema).expect("create index");
-    }
-}
-
 #[derive(Debug, StructOpt)]
 struct IndexOptions {
     /// Email read/parse thread count
@@ -86,15 +67,38 @@ enum Command {
     Search { query: String },
 }
 
-struct Esc {}
+struct Esc {
+    dir: PathBuf
+}
 
 impl Esc {
-    fn index(index_dir: &PathBuf, opts: &IndexOptions) {
+    fn new<P: Into<PathBuf>>(dir: P) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    fn open(&mut self) -> Index {
+        if let Ok(index) = Index::open_in_dir(&self.dir) {
+            index
+        } else {
+            let mut schema_builder = SchemaBuilder::default();
+            schema_builder.add_text_field("id", STRING | STORED);
+            schema_builder.add_text_field("path", STRING | STORED);
+            // schema_builder.add_i64_field("date", INT_INDEXED);
+            schema_builder.add_text_field("subject", TEXT | STORED);
+            schema_builder.add_text_field("body", TEXT);
+            let schema = schema_builder.build();
+
+            let _ = fs::create_dir_all(&self.dir);
+            Index::create_in_dir(&self.dir, schema).expect("create index")
+        }
+    }
+
+    fn index(&mut self, opts: &IndexOptions) {
         let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
         let (send_idx, recv_idx) = channel::bounded::<Document>(16);
 
         let start = Instant::now();
-        let index = open_search_index(&index_dir);
+        let index = self.open();
         let mut index_writer = index
             .writer_with_num_threads(opts.index_threads, opts.index_buffer * 1024 * 1024)
             .expect("index writer");
@@ -189,10 +193,10 @@ impl Esc {
         });
     }
 
-    fn search(index_dir: &PathBuf, query: &str) {
+    fn search(&mut self, query: &str) {
         let start = Instant::now();
 
-        let index = open_search_index(&index_dir);
+        let index = self.open();
         let schema = index.schema();
 
         let path = schema.get_field("path").expect("path");
@@ -226,12 +230,14 @@ fn main() {
     let index = opts
         .index_dir
         .unwrap_or_else(|| PathBuf::from(INDEX_DIRECTORY));
+
+    let mut esc = Esc::new(index);
     match opts.cmd {
         Command::Index(index_opts) => {
-            Esc::index(&index, &index_opts);
+            esc.index(&index_opts);
         }
         Command::Search { query } => {
-            Esc::search(&index, &query);
+            esc.search(&query);
         }
     }
 }
