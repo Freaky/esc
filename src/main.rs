@@ -49,6 +49,25 @@ fn open_search_index<P: AsRef<Path>>(index_dir: P) -> Index {
 }
 
 #[derive(Debug, StructOpt)]
+struct IndexOptions {
+    /// Email read/parse thread count
+    #[structopt(long = "read-threads", default_value = "2")]
+    read_threads: usize,
+
+    /// Tantivy index thread count
+    #[structopt(long = "index-threads", default_value = "1")]
+    index_threads: usize,
+
+    /// Tantivy index buffer size in MB
+    #[structopt(long = "index-buffer", default_value = "256")]
+    index_buffer: usize,
+
+    /// Maildir base directory to index
+    #[structopt(parse(from_os_str))]
+    dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, StructOpt)]
 #[structopt(name = "esc", about = "Email Search Command")]
 struct EscArgs {
     /// Directory for Tantivy search index
@@ -62,23 +81,7 @@ struct EscArgs {
 #[derive(Debug, StructOpt)]
 enum Command {
     #[structopt(name = "index")]
-    Index {
-        /// Email read/parse thread count
-        #[structopt(long = "read-threads", default_value = "2")]
-        read_threads: usize,
-
-        /// Tantivy index thread count
-        #[structopt(long = "index-threads", default_value = "1")]
-        index_threads: usize,
-
-        /// Tantivy index buffer size in MB
-        #[structopt(long = "index-buffer", default_value = "256")]
-        index_buffer: usize,
-
-        /// Maildir base directory to index
-        #[structopt(parse(from_os_str))]
-        dirs: Vec<PathBuf>,
-    },
+    Index(IndexOptions),
     #[structopt(name = "search")]
     Search { query: String },
 }
@@ -86,20 +89,14 @@ enum Command {
 struct Esc {}
 
 impl Esc {
-    fn index(
-        index_dir: &PathBuf,
-        read_threads: usize,
-        index_threads: usize,
-        index_buffer: usize,
-        dirs: &[PathBuf],
-    ) {
+    fn index(index_dir: &PathBuf, opts: &IndexOptions) {
         let (send_file, recv_file) = channel::bounded::<walkdir::DirEntry>(128);
         let (send_idx, recv_idx) = channel::bounded::<Document>(16);
 
         let start = Instant::now();
         let index = open_search_index(&index_dir);
         let mut index_writer = index
-            .writer_with_num_threads(index_threads, index_buffer * 1024 * 1024)
+            .writer_with_num_threads(opts.index_threads, opts.index_buffer * 1024 * 1024)
             .expect("index writer");
 
         let schema = index.schema();
@@ -111,7 +108,7 @@ impl Esc {
         crossbeam::scope(|scope| {
             // WalkDir thread, -> send_file
             scope.spawn(move || {
-                for dir in dirs.iter() {
+                for dir in opts.dirs.iter() {
                     let walker = WalkDir::new(dir).min_depth(3).max_depth(3).into_iter();
 
                     for entry in walker {
@@ -123,7 +120,7 @@ impl Esc {
             });
 
             // Mail parse thread, recv_file -> send_idx, multiple
-            for _ in 0..read_threads {
+            for _ in 0..opts.read_threads {
                 let recv_file = recv_file.clone();
                 let send_idx = send_idx.clone();
                 scope.spawn(move || {
@@ -230,13 +227,8 @@ fn main() {
         .index_dir
         .unwrap_or_else(|| PathBuf::from(INDEX_DIRECTORY));
     match opts.cmd {
-        Command::Index {
-            read_threads,
-            index_threads,
-            index_buffer,
-            dirs,
-        } => {
-            Esc::index(&index, read_threads, index_threads, index_buffer, &dirs);
+        Command::Index(index_opts) => {
+            Esc::index(&index, &index_opts);
         }
         Command::Search { query } => {
             Esc::search(&index, &query);
