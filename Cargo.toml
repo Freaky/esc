@@ -6,7 +6,7 @@ authors = ["Thomas Hurst <tom@hur.st>"]
 [dependencies]
 tantivy = "0.6.1"
 walkdir = "2.2.5"
-mailparse = { git = "https://github.com/staktrace/mailparse" }
+mailparse = "0.6.3"
 crossbeam = "0.4.1"
 structopt = "0.2.10"
 
