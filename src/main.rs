@@ -184,8 +184,8 @@ impl Esc {
                         println!(
                             "[{} {:.2}/sec {:?}]",
                             indexed,
-                            indexed as f64
-                                / (elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 * 1e-9),
+                            f64::from(indexed)
+                                / (elapsed.as_secs() as f64 + f64::from(elapsed.subsec_nanos()) * 1e-9),
                             elapsed
                         );
                     }
