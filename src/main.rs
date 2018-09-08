@@ -83,7 +83,7 @@ impl Esc {
             let mut schema_builder = SchemaBuilder::default();
             schema_builder.add_text_field("id", STRING | STORED);
             schema_builder.add_text_field("path", STRING | STORED);
-            // schema_builder.add_i64_field("date", INT_INDEXED);
+            schema_builder.add_i64_field("date", INT_INDEXED);
             schema_builder.add_text_field("subject", TEXT | STORED);
             schema_builder.add_text_field("body", TEXT);
             let schema = schema_builder.build();
@@ -105,6 +105,7 @@ impl Esc {
 
         let schema = index.schema();
         let id = schema.get_field("id").expect("id");
+        let date = schema.get_field("date").expect("date");
         let path = schema.get_field("path").expect("path");
         let subject = schema.get_field("subject").expect("subject");
         let body = schema.get_field("body").expect("body");
@@ -146,17 +147,19 @@ impl Esc {
 
                                 let m_id = email.headers.get_first_value("Message-Id");
                                 let m_sub = email.headers.get_first_value("Subject");
+                                let m_date = email.headers.get_first_value("Date");
                                 let m_body = email.get_body();
 
-                                if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(m_body)) =
-                                    (m_id, m_sub, m_body)
+                                if let (Ok(Some(m_id)), Ok(Some(m_sub)), Ok(Some(m_date)), Ok(m_body)) =
+                                    (m_id, m_sub, m_date, m_body)
                                 {
                                     let doc = doc!(
-                                    path => entry.path().to_string_lossy().to_string(),
-                                    id => m_id,
-                                    subject => m_sub,
-                                    body => m_body
-                                );
+                                        id => m_id,
+                                        date => mailparse::dateparse(&m_date).unwrap_or(0),
+                                        path => entry.path().to_string_lossy().to_string(),
+                                        subject => m_sub,
+                                        body => m_body
+                                    );
                                     send_idx.send(doc);
                                 };
                                 Ok(())
