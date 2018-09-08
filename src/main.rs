@@ -30,25 +30,6 @@ use std::time::Instant;
 const INDEX_DIRECTORY: &str = "/tmp/email_sucks_completely/";
 
 #[derive(Debug, StructOpt)]
-struct IndexOptions {
-    /// Email read/parse thread count
-    #[structopt(long = "read-threads", default_value = "2")]
-    read_threads: usize,
-
-    /// Tantivy index thread count
-    #[structopt(long = "index-threads", default_value = "1")]
-    index_threads: usize,
-
-    /// Tantivy index buffer size in MB
-    #[structopt(long = "index-buffer", default_value = "256")]
-    index_buffer: usize,
-
-    /// Maildir base directory to index
-    #[structopt(parse(from_os_str))]
-    dirs: Vec<PathBuf>,
-}
-
-#[derive(Debug, StructOpt)]
 #[structopt(name = "esc", about = "Email Search Command")]
 struct EscArgs {
     /// Directory for Tantivy search index
@@ -65,6 +46,25 @@ enum Command {
     Index(IndexOptions),
     #[structopt(name = "search")]
     Search { query: String },
+}
+
+#[derive(Debug, StructOpt)]
+struct IndexOptions {
+    /// Email read/parse thread count
+    #[structopt(long = "read-threads", default_value = "2")]
+    read_threads: usize,
+
+    /// Tantivy index thread count
+    #[structopt(long = "index-threads", default_value = "1")]
+    index_threads: usize,
+
+    /// Tantivy index buffer size in MB
+    #[structopt(long = "index-buffer", default_value = "256")]
+    index_buffer: usize,
+
+    /// Maildir base directory to index
+    #[structopt(parse(from_os_str))]
+    dirs: Vec<PathBuf>,
 }
 
 struct Esc {
