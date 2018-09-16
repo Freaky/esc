@@ -182,7 +182,7 @@ impl Esc {
                     if indexed % 10000 == 0 {
                         let elapsed = start.elapsed();
                         println!(
-                            "[{} {:.2}/sec {:?}]",
+                            "[{} {:.2}/sec {:.2?}]",
                             indexed,
                             f64::from(indexed)
                                 / (elapsed.as_secs() as f64 + f64::from(elapsed.subsec_nanos()) * 1e-9),
@@ -192,10 +192,10 @@ impl Esc {
                 }
 
                 index_writer.commit().expect("commit");
-                println!("Indexed {} messages in {:?}", indexed, start.elapsed());
+                println!("Indexed {} messages in {:.2?}", indexed, start.elapsed());
 
                 index_writer.wait_merging_threads().unwrap();
-                println!("Final merge finished after {:?}", start.elapsed());
+                println!("Final merge finished after {:.2?}", start.elapsed());
             });
         });
     }
@@ -220,15 +220,15 @@ impl Esc {
         searcher.search(&*query, &mut top_collector).unwrap();
         let doc_addresses = top_collector.docs();
         for doc_address in doc_addresses {
-            let retrieved_doc = searcher.doc(&doc_address).unwrap();
+            let retrieved_doc = searcher.doc(doc_address).unwrap();
             println!(
                 "{}: {}",
-                retrieved_doc.get_first(path).unwrap().text(),
-                retrieved_doc.get_first(subject).unwrap().text()
+                retrieved_doc.get_first(path).unwrap().text().unwrap(),
+                retrieved_doc.get_first(subject).unwrap().text().unwrap()
             );
         }
 
-        println!("searched in {:?}", start.elapsed());
+        println!("searched in {:.2?}", start.elapsed());
     }
 }
 
